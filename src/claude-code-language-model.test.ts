@@ -4259,4 +4259,269 @@ describe('ClaudeCodeLanguageModel', () => {
       expect(finishChunk.providerMetadata['claude-code'].modelUsage).toBeUndefined();
     });
   });
+
+  describe('duplicate tool failure suppression', () => {
+    it('suppresses top-level error when tool_error precedes final result.is_error', async () => {
+      const mockResponse = {
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'assistant',
+            message: {
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'tool-1',
+                  name: 'Read',
+                  input: { file_path: '/missing.txt' },
+                },
+              ],
+            },
+          };
+          yield {
+            type: 'user',
+            message: {
+              content: [
+                {
+                  type: 'tool_error',
+                  tool_use_id: 'tool-1',
+                  name: 'Read',
+                  error: 'File not found',
+                },
+              ],
+            },
+          };
+          yield {
+            type: 'result',
+            subtype: 'error_during_execution',
+            is_error: true,
+            result: 'File not found',
+            session_id: 'session-1',
+            usage: { input_tokens: 10, output_tokens: 0 },
+          };
+        },
+      };
+      vi.mocked(mockQuery).mockReturnValue(mockResponse as any);
+
+      const { stream } = await model.doStream({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'Read /missing.txt' }] }],
+      });
+
+      const chunks: ExtendedStreamPart[] = [];
+      const reader = stream.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+
+      // Should have tool-error but no top-level error
+      expect(chunks.some((c) => c.type === 'tool-error')).toBe(true);
+      expect(chunks.some((c) => c.type === 'error')).toBe(false);
+
+      // Should have a finish event with error finish reason
+      const finishChunk = chunks.find((c) => c.type === 'finish') as any;
+      expect(finishChunk).toBeDefined();
+      expect(finishChunk.finishReason.unified).toBe('error');
+    });
+
+    it('suppresses top-level error when tool_result with is_error precedes final result.is_error', async () => {
+      const mockResponse = {
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'assistant',
+            message: {
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'tool-1',
+                  name: 'Bash',
+                  input: { command: 'false' },
+                },
+              ],
+            },
+          };
+          yield {
+            type: 'user',
+            message: {
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'tool-1',
+                  content: 'Command failed with exit code 1',
+                  is_error: true,
+                },
+              ],
+            },
+          };
+          yield {
+            type: 'result',
+            subtype: 'error_during_execution',
+            is_error: true,
+            result: 'Command failed with exit code 1',
+            session_id: 'session-1',
+            usage: { input_tokens: 10, output_tokens: 0 },
+          };
+        },
+      };
+      vi.mocked(mockQuery).mockReturnValue(mockResponse as any);
+
+      const { stream } = await model.doStream({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'Run false' }] }],
+      });
+
+      const chunks: ExtendedStreamPart[] = [];
+      const reader = stream.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+
+      // Should have tool-result with isError but no top-level error
+      const toolResult = chunks.find((c) => c.type === 'tool-result') as any;
+      expect(toolResult).toBeDefined();
+      expect(toolResult.isError).toBe(true);
+      expect(chunks.some((c) => c.type === 'error')).toBe(false);
+
+      // Should have a finish event with error finish reason
+      const finishChunk = chunks.find((c) => c.type === 'finish') as any;
+      expect(finishChunk).toBeDefined();
+      expect(finishChunk.finishReason.unified).toBe('error');
+    });
+
+    it('still emits top-level error when result.is_error without prior tool failure', async () => {
+      const mockResponse = {
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'result',
+            subtype: 'error_during_execution',
+            is_error: true,
+            result: 'Authentication failed',
+            session_id: 'session-1',
+            usage: { input_tokens: 0, output_tokens: 0 },
+          };
+        },
+      };
+      vi.mocked(mockQuery).mockReturnValue(mockResponse as any);
+
+      const { stream } = await model.doStream({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'Test' }] }],
+      });
+
+      const chunks: ExtendedStreamPart[] = [];
+      const reader = stream.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+
+      // Should emit top-level error
+      expect(chunks.some((c) => c.type === 'error')).toBe(true);
+      // Should not emit finish
+      expect(chunks.some((c) => c.type === 'finish')).toBe(false);
+    });
+
+    it('still emits top-level error for auth failures even with is_error', async () => {
+      const mockResponse = {
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'result',
+            subtype: 'success',
+            is_error: true,
+            result: 'Invalid API key · Please run /login',
+            session_id: 'session-1',
+            usage: { input_tokens: 0, output_tokens: 0 },
+          };
+        },
+      };
+      vi.mocked(mockQuery).mockReturnValue(mockResponse as any);
+
+      const { stream } = await model.doStream({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'Test' }] }],
+      });
+
+      const chunks: ExtendedStreamPart[] = [];
+      const reader = stream.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+
+      expect(chunks.some((c) => c.type === 'error')).toBe(true);
+      expect(isAuthenticationError((chunks.find((c) => c.type === 'error') as any).error)).toBe(
+        true
+      );
+    });
+
+    it('still emits top-level error for structured output retry exhaustion', async () => {
+      const mockResponse = {
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'result',
+            subtype: 'error_max_structured_output_retries',
+            is_error: true,
+            session_id: 'session-1',
+            usage: { input_tokens: 10, output_tokens: 5 },
+          };
+        },
+      };
+      vi.mocked(mockQuery).mockReturnValue(mockResponse as any);
+
+      const { stream } = await model.doStream({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'Test' }] }],
+      });
+
+      const chunks: ExtendedStreamPart[] = [];
+      const reader = stream.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+
+      expect(chunks.some((c) => c.type === 'error')).toBe(true);
+      // is_error check fires before the structured output subtype check,
+      // so the error message comes from the generic is_error path
+      expect(chunks.some((c) => c.type === 'finish')).toBe(false);
+    });
+
+    it('normal successful stream remains unchanged', async () => {
+      const mockResponse = {
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'assistant',
+            message: {
+              content: [{ type: 'text', text: 'Done' }],
+            },
+          };
+          yield {
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            session_id: 'session-1',
+            usage: { input_tokens: 10, output_tokens: 5 },
+          };
+        },
+      };
+      vi.mocked(mockQuery).mockReturnValue(mockResponse as any);
+
+      const { stream } = await model.doStream({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'Say done' }] }],
+      });
+
+      const chunks: ExtendedStreamPart[] = [];
+      const reader = stream.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+
+      expect(chunks.some((c) => c.type === 'error')).toBe(false);
+      expect(chunks.some((c) => c.type === 'finish')).toBe(true);
+      expect(chunks.some((c) => c.type === 'text-delta')).toBe(true);
+    });
+  });
 });

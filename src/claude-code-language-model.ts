@@ -1603,6 +1603,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         // Track if text was streamed via content blocks to prevent double emission in result handler
         let textStreamedViaContentBlock = false;
 
+        // Track provider-executed tool failures to avoid duplicate top-level stream errors.
+        // When a tool fails, the failure is emitted as tool-result (isError) or tool-error.
+        // The final SDK result may also have is_error=true as an aggregate — suppress that duplicate.
+        let sawProviderExecutedToolFailure = false;
+        const providerExecutedToolFailureIds = new Set<string>();
+
         // Extended thinking: Map block indices to reasoning part IDs
         const reasoningBlocksByIndex = new Map<number, string>();
         let currentReasoningPartId: string | undefined;
@@ -2313,6 +2319,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                     },
                   },
                 } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+
+                if (result.isError) {
+                  sawProviderExecutedToolFailure = true;
+                  providerExecutedToolFailureIds.add(result.id);
+                }
               }
               // Handle tool errors
               for (const error of this.extractToolErrors(content)) {
@@ -2378,6 +2389,9 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                     },
                   },
                 } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+
+                sawProviderExecutedToolFailure = true;
+                providerExecutedToolFailureIds.add(error.id);
               }
             } else if (message.type === 'result') {
               done();
@@ -2389,7 +2403,23 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   'result' in message && typeof message.result === 'string'
                     ? message.result
                     : 'Claude Code CLI returned an error';
-                throw Object.assign(new Error(errorMessage), { exitCode: 1 });
+
+                // When a provider-executed tool failure was already emitted as a tool-level
+                // error/result, the final SDK result is just the aggregate — don't also
+                // emit a top-level stream error, which would kill the browser stream.
+                const isDuplicateProviderToolFailure =
+                  sawProviderExecutedToolFailure &&
+                  (message.subtype as string) === 'error_during_execution';
+
+                if (!isDuplicateProviderToolFailure) {
+                  throw Object.assign(new Error(errorMessage), { exitCode: 1 });
+                }
+
+                this.logger.warn(
+                  `[claude-code] Final result is_error=true after provider-executed tool failure(s); ` +
+                    `preserving tool-level failure stream parts and finishing without top-level stream error. ` +
+                    `toolCallIds=[${Array.from(providerExecutedToolFailureIds).join(',')}]`
+                );
               }
 
               // Handle structured output errors (SDK 0.1.45+)
