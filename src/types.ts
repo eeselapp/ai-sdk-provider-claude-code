@@ -11,11 +11,23 @@ import type {
   SpawnOptions,
   AgentMcpServerSpec,
   Query,
+  SDKUserMessage,
   WarmQuery,
   ThinkingConfig,
 } from '@anthropic-ai/claude-agent-sdk';
 
 export type StreamingInputMode = 'auto' | 'always' | 'off';
+
+/**
+ * Warm query handle used by the provider.
+ *
+ * Compatible with the SDK's `WarmQuery` shape, but allows providers/apps to
+ * implement a richer `query(prompt, options?)` signature so the warm path can
+ * receive fully-resolved query options.
+ */
+export type ProviderWarmQuery = Omit<WarmQuery, 'query'> & {
+  query: (prompt: string | AsyncIterable<SDKUserMessage>, options?: Options) => Query;
+};
 
 /**
  * Logger interface for custom logging.
@@ -410,7 +422,7 @@ export interface ClaudeCodeSettings {
    * const model = claudeCode('sonnet', { warmQuery });
    * ```
    */
-  warmQuery?: WarmQuery;
+  warmQuery?: ProviderWarmQuery;
 
   /**
    * Maximum size (in characters) for tool results sent to the client stream.

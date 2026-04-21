@@ -707,7 +707,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       // WarmQuery is single-use by design; reserve it immediately.
       this.warmQueryConsumed = true;
       try {
-        const response = warmQuery.query(prompt);
+        const response = warmQuery.query(prompt, options);
         const onAbort = () => response.close();
         abortController.signal.addEventListener('abort', onAbort, { once: true });
         this.logger.debug('[claude-code] Using pre-warmed SDK query handle');

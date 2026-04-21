@@ -204,6 +204,9 @@ const { text } = await generateText({
 });
 ```
 
+The provider forwards resolved runtime options via `warmQuery.query(prompt, options)`.
+SDK `WarmQuery` ignores `options`; custom pools can use them to enforce compatibility.
+
 ### Logging Configuration
 
 Control how warnings and errors are logged:

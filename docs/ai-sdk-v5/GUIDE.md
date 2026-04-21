@@ -300,6 +300,9 @@ const result = await generateText({
 });
 ```
 
+The provider calls `warmQuery.query(prompt, options)` and forwards resolved runtime options.
+SDK `WarmQuery` ignores `options`, but custom warm pools can use them for strict compatibility checks.
+
 ### Logging Configuration
 
 Control how the provider logs execution information, warnings, and errors. The logger now supports multiple log levels and a verbose mode for detailed debugging.

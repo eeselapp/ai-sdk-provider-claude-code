@@ -338,6 +338,10 @@ const result = await generateText({
 });
 ```
 
+The provider forwards resolved runtime options to `warmQuery.query(prompt, options)`.
+SDK `WarmQuery` implementations ignore the second argument, but custom warm pools can use it
+to enforce strict option matching (e.g., `cwd`, env/token, session/resume, hooks, MCP config).
+
 ## Mid-Session Message Injection
 
 This provider supports **mid-session message injection** for supervisor patterns, allowing you to interrupt, redirect, or provide feedback to an agent during execution.

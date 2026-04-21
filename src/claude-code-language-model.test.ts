@@ -1344,6 +1344,46 @@ describe('ClaudeCodeLanguageModel', () => {
       expect(warmQuery.query).toHaveBeenCalledTimes(1);
       expect(vi.mocked(mockQuery)).toHaveBeenCalledTimes(1);
     });
+
+    it('passes resolved query options to warmQuery.query()', async () => {
+      const makeResponse = () => ({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'result',
+            subtype: 'success',
+            session_id: 'warm-options-session',
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        },
+      });
+
+      const warmQuery = {
+        query: vi.fn().mockImplementation(() => makeResponse()),
+        close: vi.fn(),
+      };
+
+      const modelWithWarm = new ClaudeCodeLanguageModel({
+        id: 'sonnet',
+        settings: {
+          warmQuery,
+          maxTurns: 7,
+          permissionMode: 'default',
+          cwd: '/tmp',
+        } as any,
+      });
+
+      await modelWithWarm.doGenerate({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'warm with options' }] }],
+      } as any);
+
+      expect(warmQuery.query).toHaveBeenCalledTimes(1);
+      const [, warmOptions] = warmQuery.query.mock.calls[0] as [unknown, Record<string, unknown>];
+      expect(warmOptions).toBeDefined();
+      expect(warmOptions.model).toBe('sonnet');
+      expect(warmOptions.maxTurns).toBe(7);
+      expect(warmOptions.permissionMode).toBe('default');
+      expect(warmOptions.cwd).toBe('/tmp');
+    });
   });
 
   describe('doStream', () => {
