@@ -16,7 +16,7 @@ import { mapClaudeCodeFinishReason } from './map-claude-code-finish-reason.js';
 import { validateModelId, validatePrompt, validateSessionId } from './validation.js';
 import { getLogger, createVerboseLogger } from './logger.js';
 
-import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
+import { query, type Options, type Query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKUserMessage, SDKPartialAssistantMessage } from '@anthropic-ai/claude-agent-sdk';
 
 const CLAUDE_CODE_TRUNCATION_WARNING =
@@ -638,6 +638,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
   private modelValidationWarning?: string;
   private settingsValidationWarnings: string[];
   private logger: Logger;
+  private warmQueryConsumed = false;
 
   constructor(options: ClaudeCodeLanguageModelOptions) {
     this.modelId = options.id;
@@ -694,6 +695,40 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
   private getEffectiveResume(sdkOptions?: Partial<Options>): string | undefined {
     return sdkOptions?.resume ?? this.settings.resume ?? this.sessionId;
+  }
+
+  private executeSdkQuery(
+    prompt: string | AsyncIterable<SDKUserMessage>,
+    options: Options,
+    abortController: AbortController
+  ): { response: Query; cleanup: () => void } {
+    const warmQuery = this.settings.warmQuery;
+    if (warmQuery && !this.warmQueryConsumed) {
+      // WarmQuery is single-use by design; reserve it immediately.
+      this.warmQueryConsumed = true;
+      try {
+        const response = warmQuery.query(prompt);
+        const onAbort = () => response.close();
+        abortController.signal.addEventListener('abort', onAbort, { once: true });
+        this.logger.debug('[claude-code] Using pre-warmed SDK query handle');
+        return {
+          response,
+          cleanup: () => abortController.signal.removeEventListener('abort', onAbort),
+        };
+      } catch (error) {
+        this.logger.warn(
+          `[claude-code] warmQuery failed, falling back to standard query(): ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+
+    return {
+      response: query({
+        prompt,
+        options,
+      }),
+      cleanup: () => {},
+    };
   }
 
   private extractTextAndThinking(content: unknown): { text: string; thinking: string[] } {
@@ -1283,6 +1318,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const outputStreamEnded = new Promise((resolve) => {
       done = () => resolve(undefined);
     });
+    let cleanupQuery = () => {};
     try {
       if (effectiveCanUseTool && effectivePermissionPromptToolName) {
         throw new Error(
@@ -1305,10 +1341,8 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         `[claude-code] Executing query with streamingInput: ${wantsStreamInput}, session: ${effectiveResume ?? 'new'}`
       );
 
-      const response = query({
-        prompt: sdkPrompt,
-        options: queryOptions,
-      });
+      const { response, cleanup } = this.executeSdkQuery(sdkPrompt, queryOptions, abortController);
+      cleanupQuery = cleanup;
 
       // Invoke onQueryCreated callback to expose Query object for advanced features
       // like mid-stream message injection via query.streamInput()
@@ -1404,6 +1438,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         throw this.handleClaudeCodeError(error, messagesPrompt, collectedStderr);
       }
     } finally {
+      cleanupQuery();
       if (options.abortSignal && abortListener) {
         options.abortSignal.removeEventListener('abort', abortListener);
       }
@@ -1606,6 +1641,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         // Extended thinking: Map block indices to reasoning part IDs
         const reasoningBlocksByIndex = new Map<number, string>();
         let currentReasoningPartId: string | undefined;
+        let cleanupQuery = () => {};
 
         try {
           // Emit stream-start with warnings
@@ -1632,10 +1668,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             `[claude-code] Starting stream query with streamingInput: ${wantsStreamInput}, session: ${effectiveResume ?? 'new'}`
           );
 
-          const response = query({
-            prompt: sdkPrompt,
-            options: queryOptions,
-          });
+          const { response, cleanup } = this.executeSdkQuery(
+            sdkPrompt,
+            queryOptions,
+            abortController
+          );
+          cleanupQuery = cleanup;
 
           // Invoke onQueryCreated callback to expose Query object for advanced features
           // like mid-stream message injection via query.streamInput()
@@ -2619,6 +2657,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
           controller.close();
         } finally {
+          cleanupQuery();
           if (options.abortSignal && abortListener) {
             options.abortSignal.removeEventListener('abort', abortListener);
           }

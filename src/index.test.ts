@@ -33,6 +33,8 @@ describe('index exports', () => {
     expect(typeof exports.createSdkMcpServer).toBe('function');
     expect(exports.tool).toBeDefined();
     expect(typeof exports.tool).toBe('function');
+    expect(exports.startup).toBeDefined();
+    expect(typeof exports.startup).toBe('function');
   });
 
   it('should export correct modules', async () => {

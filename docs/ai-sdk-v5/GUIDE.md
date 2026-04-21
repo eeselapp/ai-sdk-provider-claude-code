@@ -261,6 +261,7 @@ const result = await generateText({
 | `canUseTool`                 | `(name, input, opts) => Promise`          | `undefined` | Runtime permission callback. Requires streaming input at SDK level |
 | `debug`                      | `boolean`                                 | `undefined` | Enable SDK-level debug logging                                     |
 | `debugFile`                  | `string`                                  | `undefined` | Path to a file for SDK debug log output                            |
+| `warmQuery`                  | `WarmQuery`                               | `undefined` | Pre-warmed handle from `startup()` to reduce first-token latency   |
 
 ### Custom Configuration
 
@@ -278,6 +279,24 @@ const claude = createClaudeCode({
 const result = await generateText({
   model: claude('opus'),
   prompt: 'Hello, Claude!',
+});
+```
+
+### Prewarm Startup
+
+If your first request is slow, pre-warm Claude Code on app startup and pass the handle via `warmQuery`.
+
+```typescript
+import { generateText } from 'ai';
+import { claudeCode, startup } from 'ai-sdk-provider-claude-code';
+
+const warmQuery = await startup({
+  options: { model: 'sonnet', maxTurns: 3 },
+});
+
+const result = await generateText({
+  model: claudeCode('sonnet', { warmQuery }),
+  prompt: 'List key files in this repo.',
 });
 ```
 

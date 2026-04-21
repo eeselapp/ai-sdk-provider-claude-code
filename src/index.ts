@@ -40,7 +40,7 @@ export type {
 export type { ClaudeCodeSettings, Logger, MessageInjector } from './types.js';
 
 // Convenience re-exports from the SDK for custom tools and hooks
-export { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
+export { createSdkMcpServer, tool, startup } from '@anthropic-ai/claude-agent-sdk';
 export { createCustomMcpServer } from './mcp-helpers.js';
 export type { ToolAnnotations, MinimalCallToolResult } from './mcp-helpers.js';
 export type {
@@ -69,6 +69,8 @@ export type {
   AgentMcpServerSpec,
   // Query interface for mid-stream message injection via streamInput()
   Query,
+  // Pre-warmed query handle from startup()
+  WarmQuery,
   // Thinking configuration types
   ThinkingConfig,
   ThinkingAdaptive,

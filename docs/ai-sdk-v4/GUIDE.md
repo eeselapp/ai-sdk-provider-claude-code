@@ -167,6 +167,7 @@ const { text } = await generateText({
 | `disallowedTools`            | `string[]`           | `undefined` | Tools to restrict             |
 | `mcpServers`                 | `object`             | `undefined` | MCP server configuration      |
 | `resume`                     | `string`             | `undefined` | Resume an existing session    |
+| `warmQuery`                  | `WarmQuery`          | `undefined` | Pre-warmed handle from `startup()` for faster first token |
 
 ### Custom Configuration
 
@@ -184,6 +185,22 @@ const claude = createClaudeCode({
 const { text } = await generateText({
   model: claude('opus'),
   prompt: 'Hello, Claude!',
+});
+```
+
+### Prewarm Startup
+
+```typescript
+import { generateText } from 'ai';
+import { claudeCode, startup } from 'ai-sdk-provider-claude-code';
+
+const warmQuery = await startup({
+  options: { model: 'sonnet', maxTurns: 3 },
+});
+
+const { text } = await generateText({
+  model: claudeCode('sonnet', { warmQuery }),
+  prompt: 'Summarize this repo.',
 });
 ```
 

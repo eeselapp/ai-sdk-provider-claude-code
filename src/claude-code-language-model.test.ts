@@ -1308,6 +1308,42 @@ describe('ClaudeCodeLanguageModel', () => {
       expect(result.content[0]).toEqual({ type: 'text', text: 'Just text, no thinking.' });
       expect(result.providerMetadata?.['claude-code']?.thinkingTraces).toBeUndefined();
     });
+
+    it('uses warmQuery once, then falls back to query()', async () => {
+      const makeResponse = (sessionId: string) => ({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'result',
+            subtype: 'success',
+            session_id: sessionId,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        },
+      });
+
+      const warmQuery = {
+        query: vi.fn().mockImplementation(() => makeResponse('warm-session')),
+        close: vi.fn(),
+      };
+
+      const modelWithWarm = new ClaudeCodeLanguageModel({
+        id: 'sonnet',
+        settings: { warmQuery } as any,
+      });
+
+      vi.mocked(mockQuery).mockImplementation(() => makeResponse('cold-session') as any);
+
+      await modelWithWarm.doGenerate({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'first call' }] }],
+      } as any);
+
+      await modelWithWarm.doGenerate({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'second call' }] }],
+      } as any);
+
+      expect(warmQuery.query).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(mockQuery)).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('doStream', () => {
@@ -1349,6 +1385,56 @@ describe('ClaudeCodeLanguageModel', () => {
 
       expect(onQueryCreated).toHaveBeenCalledTimes(1);
       expect(onQueryCreated).toHaveBeenCalledWith(mockResponse);
+    });
+
+    it('uses warmQuery once for streaming, then falls back to query()', async () => {
+      const makeStreamResponse = (sessionId: string) => ({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'assistant',
+            message: { content: [{ type: 'text', text: `hello-${sessionId}` }] },
+          };
+          yield {
+            type: 'result',
+            subtype: 'success',
+            session_id: sessionId,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        },
+      });
+
+      const warmQuery = {
+        query: vi.fn().mockImplementation(() => makeStreamResponse('warm-stream')),
+        close: vi.fn(),
+      };
+
+      const modelWithWarm = new ClaudeCodeLanguageModel({
+        id: 'sonnet',
+        settings: { warmQuery } as any,
+      });
+
+      vi.mocked(mockQuery).mockImplementation(() => makeStreamResponse('cold-stream') as any);
+
+      const first = await modelWithWarm.doStream({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'first stream call' }] }],
+      });
+      const firstReader = first.stream.getReader();
+      while (true) {
+        const { done } = await firstReader.read();
+        if (done) break;
+      }
+
+      const second = await modelWithWarm.doStream({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'second stream call' }] }],
+      });
+      const secondReader = second.stream.getReader();
+      while (true) {
+        const { done } = await secondReader.read();
+        if (done) break;
+      }
+
+      expect(warmQuery.query).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(mockQuery)).toHaveBeenCalledTimes(1);
     });
 
     it('should log actionable MCP warnings on stream init for failed servers', async () => {

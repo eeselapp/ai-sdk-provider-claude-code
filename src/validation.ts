@@ -212,6 +212,20 @@ export const claudeCodeSettingsSchema = z
       })
       .optional(),
     sdkOptions: z.record(z.string(), z.any()).optional(),
+    warmQuery: z
+      .any()
+      .refine(
+        (val) =>
+          val === undefined ||
+          (typeof val === 'object' &&
+            val !== null &&
+            'query' in val &&
+            typeof (val as { query?: unknown }).query === 'function'),
+        {
+          message: 'warmQuery must be an object with a query(prompt) function',
+        }
+      )
+      .optional(),
     maxToolResultSize: z.number().int().min(100).max(1000000).optional(),
     // Callback invoked when Query object is created - for mid-stream injection via streamInput()
     onQueryCreated: z

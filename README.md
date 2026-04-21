@@ -292,6 +292,7 @@ This provider exposes Agent SDK options directly. Key options include:
 | `effort`                          | Effort level: `'low'`, `'medium'`, `'high'`, or `'max'`                                                          |
 | `thinking`                        | Thinking config: `{ type: 'adaptive' }`, `{ type: 'enabled', budgetTokens?: number }`, or `{ type: 'disabled' }` |
 | `promptSuggestions`               | Enable prompt suggestions (`boolean`)                                                                            |
+| `warmQuery`                       | Pre-warmed handle from `startup()` for lower first-token latency                                                 |
 
 **Agent definitions** (`agents`) now support additional fields (v3.2.0+):
 
@@ -315,6 +316,25 @@ const model = claudeCode('sonnet', {
     maxBudgetUsd: 1,
     resume: 'session-abc',
   },
+});
+```
+
+## Prewarm Startup (Lower TTFT)
+
+Use `startup()` to pre-spawn Claude Code at app boot, then pass the returned handle as `warmQuery`.
+The provider consumes it once and automatically falls back to normal `query()` afterward.
+
+```ts
+import { startup, claudeCode } from 'ai-sdk-provider-claude-code';
+import { generateText } from 'ai';
+
+const warmQuery = await startup({
+  options: { model: 'sonnet', maxTurns: 3 },
+});
+
+const result = await generateText({
+  model: claudeCode('sonnet', { warmQuery }),
+  prompt: 'Summarize this repository.',
 });
 ```
 

@@ -11,6 +11,7 @@ import type {
   SpawnOptions,
   AgentMcpServerSpec,
   Query,
+  WarmQuery,
   ThinkingConfig,
 } from '@anthropic-ai/claude-agent-sdk';
 
@@ -392,6 +393,24 @@ export interface ClaudeCodeSettings {
    * are ignored if supplied here.
    */
   sdkOptions?: Partial<Options>;
+
+  /**
+   * Pre-warmed query handle from `startup()` (Agent SDK).
+   *
+   * When provided, the provider will use this handle for the next request
+   * to skip CLI spawn/initialize latency, then automatically fall back to
+   * regular `query()` calls for subsequent requests.
+   *
+   * @example
+   * ```typescript
+   * import { startup } from '@anthropic-ai/claude-agent-sdk';
+   *
+   * const warmQuery = await startup({ options: { maxTurns: 3 } });
+   *
+   * const model = claudeCode('sonnet', { warmQuery });
+   * ```
+   */
+  warmQuery?: WarmQuery;
 
   /**
    * Maximum size (in characters) for tool results sent to the client stream.

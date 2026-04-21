@@ -37,6 +37,7 @@ describe('claudeCodeSettingsSchema', () => {
       verbose: true,
       env: { BASH_DEFAULT_TIMEOUT_MS: '10' },
       sdkOptions: { maxTurns: 3 },
+      warmQuery: { query: () => ({}) },
     };
 
     const result = claudeCodeSettingsSchema.safeParse(validSettings);
@@ -172,6 +173,23 @@ describe('claudeCodeSettingsSchema', () => {
 
   it('should reject debugFile when not a string', () => {
     const result = claudeCodeSettingsSchema.safeParse({ debugFile: 42 as any });
+    expect(result.success).toBe(false);
+  });
+
+  it('should accept warmQuery objects with a query method', () => {
+    const result = claudeCodeSettingsSchema.safeParse({
+      warmQuery: {
+        query: () => ({}),
+        close: () => {},
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('should reject warmQuery without a query method', () => {
+    const result = claudeCodeSettingsSchema.safeParse({
+      warmQuery: { close: () => {} } as any,
+    });
     expect(result.success).toBe(false);
   });
 });
