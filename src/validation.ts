@@ -179,7 +179,12 @@ export const claudeCodeSettingsSchema = z
             tools: z.array(z.string()).optional(),
             disallowedTools: z.array(z.string()).optional(),
             prompt: z.string(),
-            model: z.enum(['sonnet', 'opus', 'haiku', 'inherit']).optional(),
+            // The Claude Agent SDK's AgentDefinition.model is `string` — it accepts
+            // aliases ('sonnet'|'opus'|'haiku'|'fable'|'inherit') OR a full model ID
+            // (incl. gateway 'provider/model' ids like 'deepseek/deepseek-v4-flash').
+            // The old z.enum was over-restrictive and 500'd any full-string subagent
+            // model at defaultSettings validation. Match the SDK: allow any string.
+            model: z.string().optional(),
             mcpServers: z
               .array(
                 z.union([
