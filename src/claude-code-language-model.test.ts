@@ -1998,6 +1998,21 @@ describe('ClaudeCodeLanguageModel', () => {
           }
         );
 
+        it("keeps a subagent's synthetic error out of the parent's text", async () => {
+          // It reaches the caller as the Task/Agent tool result instead.
+          const chunks = await collect([
+            ...streamedStepWithTool(sentence, 'toolu_parent'),
+            {
+              type: 'assistant',
+              parent_tool_use_id: 'toolu_parent',
+              message: { model: '<synthetic>', content: [{ type: 'text', text: apiError }] },
+            },
+            createResultMessage('subagent-error'),
+          ]);
+
+          expect(textParts(chunks)).toEqual([sentence]);
+        });
+
         it('closes an open text part before emitting the synthetic message', async () => {
           const chunks = await collect([
             createTextDeltaEvent('Working on it'),

@@ -2129,7 +2129,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
               // the message from its first character.
               const isSynthetic = (message.message as { model?: string }).model === '<synthetic>';
 
-              if (text && isSynthetic) {
+              if (isSynthetic && sdkParentToolUseId) {
+                // A subagent's own error: it already reaches the caller as the
+                // Task/Agent tool result, so don't write it into the parent's text.
+              } else if (text && isSynthetic) {
                 accumulatedText = hasReceivedStreamEvents ? text : accumulatedText + text;
                 if (options.responseFormat?.type !== 'json') {
                   if (textPartId) {
