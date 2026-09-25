@@ -2122,7 +2122,33 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                 .map((c: { type: string; text?: string }) => (c.type === 'text' ? c.text : ''))
                 .join('');
 
-              if (text) {
+              // The SDK writes its own messages (e.g. "API Error: 429 ..." after it gives up
+              // retrying) as assistant messages with model "<synthetic>". They are never
+              // streamed, so slicing them by streamedTextLength (often stale by now) would cut
+              // the text mid-way. Emit them whole, as their own text part, so consumers see
+              // the message from its first character.
+              const isSynthetic = (message.message as { model?: string }).model === '<synthetic>';
+
+              if (text && isSynthetic) {
+                accumulatedText = hasReceivedStreamEvents ? text : accumulatedText + text;
+                if (options.responseFormat?.type !== 'json') {
+                  if (textPartId) {
+                    const closedTextId = textPartId;
+                    controller.enqueue({ type: 'text-end', id: closedTextId });
+                    for (const [idx, blockTextId] of textBlocksByIndex) {
+                      if (blockTextId === closedTextId) {
+                        textBlocksByIndex.delete(idx);
+                        break;
+                      }
+                    }
+                  }
+                  // Left open like any other text part; the usual paths (next user
+                  // message, tool call, or the result) close it.
+                  textPartId = generateId();
+                  controller.enqueue({ type: 'text-start', id: textPartId });
+                  controller.enqueue({ type: 'text-delta', id: textPartId, delta: text });
+                }
+              } else if (text) {
                 // When we've received stream_events, assistant messages contain cumulative text
                 // that we've already emitted via stream_event deltas - skip duplicates
                 // When no stream_events received, assistant messages contain incremental text

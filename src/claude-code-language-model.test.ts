@@ -1900,6 +1900,152 @@ describe('ClaudeCodeLanguageModel', () => {
         expect(textEnds).toHaveLength(1);
       });
 
+      describe('synthetic SDK messages (model "<synthetic>")', () => {
+        // One streamed assistant step the way the SDK delivers it: stream events for a
+        // text block, the block closing on content_block_stop, the full assistant message
+        // for that block, then a tool call and its result.
+        const streamedStepWithTool = (text: string, toolId: string) => [
+          { type: 'stream_event', event: { type: 'message_start', message: {} } },
+          {
+            type: 'stream_event',
+            event: { type: 'content_block_start', index: 0, content_block: { type: 'text' } },
+          },
+          createTextDeltaEvent(text, 0),
+          { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+          { type: 'assistant', message: { content: [{ type: 'text', text }] } },
+          {
+            type: 'stream_event',
+            event: {
+              type: 'content_block_start',
+              index: 1,
+              content_block: { type: 'tool_use', id: toolId, name: 'Read' },
+            },
+          },
+          { type: 'stream_event', event: { type: 'content_block_stop', index: 1 } },
+          {
+            type: 'assistant',
+            message: {
+              content: [{ type: 'tool_use', id: toolId, name: 'Read', input: { path: 'a' } }],
+            },
+          },
+          {
+            type: 'user',
+            message: {
+              content: [{ type: 'tool_result', tool_use_id: toolId, content: 'file body' }],
+            },
+          },
+        ];
+
+        const collect = async (messages: unknown[]) => {
+          vi.mocked(mockQuery).mockReturnValue({
+            async *[Symbol.asyncIterator]() {
+              yield* messages;
+            },
+          } as any);
+          const result = await model.doStream({
+            prompt: [{ role: 'user', content: [{ type: 'text', text: 'Review the docs' }] }],
+          });
+          const chunks: any[] = [];
+          const reader = result.stream.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+          }
+          return chunks;
+        };
+
+        // Text of each text part, in emission order, keyed by part id.
+        const textParts = (chunks: any[]) => {
+          const parts = new Map<string, string>();
+          for (const c of chunks) {
+            if (c.type === 'text-start') parts.set(c.id, '');
+            if (c.type === 'text-delta') parts.set(c.id, (parts.get(c.id) ?? '') + c.delta);
+          }
+          return [...parts.values()];
+        };
+
+        // Recorded from KDCI (2026-09-17, ENG-5920): the streamed sentence is 65 chars,
+        // and the leaked error was missing exactly its first 65 chars.
+        const sentence = 'Let me read the Training Guide in full before comparing all four.';
+        const apiError =
+          'API Error: 429 {"error":{"message":"The request limited providers for this model and they are currently at capacity. Add more providers or remove restrictions for automatic fallback. Providers considered: anthropic.","type":"rate_limit_exceeded"}}';
+
+        it.each([
+          ['with error "unknown"', { error: 'unknown' }],
+          ['with no error field', {}],
+        ])(
+          'emits a synthetic error after streamed text whole, as its own text part (%s)',
+          async (_label, extra) => {
+            expect(sentence).toHaveLength(65);
+            const chunks = await collect([
+              ...streamedStepWithTool(sentence, 'toolu_kdci'),
+              {
+                type: 'assistant',
+                ...extra,
+                message: { model: '<synthetic>', content: [{ type: 'text', text: apiError }] },
+              },
+              createResultMessage('kdci'),
+            ]);
+
+            const parts = textParts(chunks);
+            expect(parts).toEqual([sentence, apiError]);
+            expect(parts[1]).toMatch(/^API Error: 429/);
+            // Every started part is closed exactly once.
+            const starts = chunks.filter((c) => c.type === 'text-start').map((c) => c.id);
+            const ends = chunks.filter((c) => c.type === 'text-end').map((c) => c.id);
+            expect(ends.sort()).toEqual(starts.sort());
+          }
+        );
+
+        it('closes an open text part before emitting the synthetic message', async () => {
+          const chunks = await collect([
+            createTextDeltaEvent('Working on it'),
+            {
+              type: 'assistant',
+              message: { model: '<synthetic>', content: [{ type: 'text', text: apiError }] },
+            },
+            createResultMessage('open-part'),
+          ]);
+
+          const types = chunks.map((c) => c.type);
+          const syntheticStart = chunks.findIndex(
+            (c, i) => c.type === 'text-start' && i > types.indexOf('text-delta')
+          );
+          const firstEnd = types.indexOf('text-end');
+          expect(firstEnd).toBeGreaterThan(-1);
+          expect(firstEnd).toBeLessThan(syntheticStart);
+          expect(textParts(chunks)).toEqual(['Working on it', apiError]);
+          expect(types.filter((t) => t === 'text-end')).toHaveLength(2);
+        });
+
+        it('emits each sentence of a normal multi-tool turn exactly once', async () => {
+          const steps = [
+            'First I will read the guide.',
+            'Now the pricing sheet, which is longer than the first sentence was.',
+            'Short.',
+          ];
+          const finalAnswer = 'All four documents agree on the refund window.';
+          const chunks = await collect([
+            ...streamedStepWithTool(steps[0], 'toolu_1'),
+            ...streamedStepWithTool(steps[1], 'toolu_2'),
+            ...streamedStepWithTool(steps[2], 'toolu_3'),
+            { type: 'stream_event', event: { type: 'message_start', message: {} } },
+            {
+              type: 'stream_event',
+              event: { type: 'content_block_start', index: 0, content_block: { type: 'text' } },
+            },
+            createTextDeltaEvent('All four documents ', 0),
+            createTextDeltaEvent('agree on the refund window.', 0),
+            { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+            { type: 'assistant', message: { content: [{ type: 'text', text: finalAnswer }] } },
+            createResultMessage('normal-turn'),
+          ]);
+
+          expect(textParts(chunks)).toEqual([...steps, finalAnswer]);
+        });
+      });
+
       it('does not emit duplicate text-end when tool content_block_start arrives mid-text-block', async () => {
         const toolUseId = 'toolu_mid_text';
         const mockResponse = {
