@@ -3,6 +3,7 @@ import type {
   LanguageModelV3FinishReason,
   LanguageModelV3StreamPart,
   LanguageModelV3Usage,
+  SharedV3ProviderMetadata,
   SharedV3Warning,
   JSONValue,
   JSONObject,
@@ -2411,14 +2412,63 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             } else if (message.type === 'result') {
               done();
 
-              // Handle is_error flag in result message (e.g., auth failures)
-              // The CLI returns successful JSON with is_error: true and error message in result field
+              // Handle is_error flag in result message (e.g., auth failures, or a run
+              // that did real work and then died). The CLI returns successful JSON with
+              // is_error: true and the error message in the result field.
+              //
+              // The result still carries the run's usage, modelUsage and total_cost_usd,
+              // so emit them in a `finish` part after the `error` part. Without the
+              // finish part the AI SDK resolves usage as undefined and the run's real
+              // cost is lost (ENG-5909). Order verified against ai@6.0.86: with
+              // error-then-finish, streamText's usage/totalUsage/providerMetadata carry
+              // the real numbers, the UI message stream still has its `error` chunk,
+              // and the UI stream's onFinish still runs. `finish` stays the last part.
               if ('is_error' in message && message.is_error === true) {
                 const errorMessage =
                   'result' in message && typeof message.result === 'string'
                     ? message.result
                     : 'Claude Code CLI returned an error';
-                throw Object.assign(new Error(errorMessage), { exitCode: 1 });
+                const resultError = Object.assign(new Error(errorMessage), { exitCode: 1 });
+
+                if ('usage' in message && message.usage) {
+                  usage = convertClaudeCodeUsage(message.usage);
+                }
+                const errorStopReason =
+                  'stop_reason' in message
+                    ? ((message as Record<string, unknown>).stop_reason as
+                        | string
+                        | null
+                        | undefined)
+                    : undefined;
+                // The unified reason is always 'error'; raw keeps what the CLI reported.
+                const errorFinishReason: LanguageModelV3FinishReason = {
+                  unified: 'error',
+                  raw: mapClaudeCodeFinishReason(message.subtype, errorStopReason).raw,
+                };
+
+                this.setSessionId(message.session_id);
+                this.logger.debug(
+                  `[claude-code] Stream result is_error - Session: ${message.session_id}, Cost: $${message.total_cost_usd?.toFixed(4) ?? 'N/A'}, Duration: ${message.duration_ms ?? 'N/A'}ms`
+                );
+
+                if (textPartId) {
+                  controller.enqueue({ type: 'text-end', id: textPartId });
+                  textPartId = undefined;
+                }
+                finalizeToolCalls();
+
+                controller.enqueue({
+                  type: 'error',
+                  error: this.handleClaudeCodeError(resultError, messagesPrompt, collectedStderr),
+                });
+                controller.enqueue({
+                  type: 'finish',
+                  finishReason: errorFinishReason,
+                  usage,
+                  providerMetadata: this.buildStreamResultProviderMetadata(message, streamWarnings),
+                });
+                controller.close();
+                return;
               }
 
               // Handle structured output errors (SDK 0.1.45+)
@@ -2518,31 +2568,11 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
               finalizeToolCalls();
 
-              // Prepare JSON-safe warnings for provider metadata
-              const warningsJson = this.serializeWarningsForMetadata(streamWarnings);
-
               controller.enqueue({
                 type: 'finish',
                 finishReason,
                 usage,
-                providerMetadata: {
-                  'claude-code': {
-                    sessionId: message.session_id,
-                    ...(message.total_cost_usd !== undefined && {
-                      costUsd: message.total_cost_usd,
-                    }),
-                    ...(message.duration_ms !== undefined && { durationMs: message.duration_ms }),
-                    ...(message.modelUsage !== undefined && {
-                      modelUsage: message.modelUsage as unknown as JSONValue,
-                    }),
-                    // JSON validation warnings are collected during streaming and included
-                    // in providerMetadata since the AI SDK's finish event doesn't support
-                    // a top-level warnings field (unlike stream-start which was already emitted)
-                    ...(streamWarnings.length > 0 && {
-                      warnings: warningsJson as unknown as JSONValue,
-                    }),
-                  },
-                },
+                providerMetadata: this.buildStreamResultProviderMetadata(message, streamWarnings),
               });
               controller.close();
               return;
@@ -2664,6 +2694,42 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       stream: stream as unknown as ReadableStream<LanguageModelV3StreamPart>,
       request: {
         body: messagesPrompt,
+      },
+    };
+  }
+
+  /**
+   * Provider metadata for the `finish` part built from a Claude Code `result`
+   * message. Shared by the success and `is_error` paths so a failed run reports
+   * its cost and per-model usage exactly like a successful one.
+   */
+  private buildStreamResultProviderMetadata(
+    message: {
+      session_id: string;
+      total_cost_usd?: number;
+      duration_ms?: number;
+      modelUsage?: unknown;
+    },
+    streamWarnings: SharedV3Warning[]
+  ): SharedV3ProviderMetadata {
+    // Prepare JSON-safe warnings for provider metadata
+    const warningsJson = this.serializeWarningsForMetadata(streamWarnings);
+    return {
+      'claude-code': {
+        sessionId: message.session_id,
+        ...(message.total_cost_usd !== undefined && {
+          costUsd: message.total_cost_usd,
+        }),
+        ...(message.duration_ms !== undefined && { durationMs: message.duration_ms }),
+        ...(message.modelUsage !== undefined && {
+          modelUsage: message.modelUsage as unknown as JSONValue,
+        }),
+        // JSON validation warnings are collected during streaming and included
+        // in providerMetadata since the AI SDK's finish event doesn't support
+        // a top-level warnings field (unlike stream-start which was already emitted)
+        ...(streamWarnings.length > 0 && {
+          warnings: warningsJson as unknown as JSONValue,
+        }),
       },
     };
   }
