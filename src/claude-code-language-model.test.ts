@@ -1500,8 +1500,8 @@ describe('ClaudeCodeLanguageModel', () => {
         chunks.push(value);
       }
 
-      // Should emit stream-start and then error
-      expect(chunks).toHaveLength(2);
+      // Should emit stream-start, then error, then a finish carrying the result's usage
+      expect(chunks).toHaveLength(3);
       expect(chunks[0]).toMatchObject({
         type: 'stream-start',
       });
@@ -1512,6 +1512,130 @@ describe('ClaudeCodeLanguageModel', () => {
       expect((chunks[1] as any).error.message).toContain('Invalid API key');
       // The error should be converted to an auth error (contains /login pattern)
       expect(isAuthenticationError((chunks[1] as any).error)).toBe(true);
+      expect(chunks[2]).toMatchObject({
+        type: 'finish',
+        finishReason: { unified: 'error', raw: 'success' },
+        providerMetadata: { 'claude-code': { sessionId: 'test-session', costUsd: 0 } },
+      });
+    });
+
+    // ENG-5909: a run that did real work and then died must still report its usage
+    // and cost. The error part comes first (consumers' fatal-error check), and the
+    // finish part comes last carrying the result's usage, costUsd and modelUsage.
+    it('should emit usage and cost in a finish part after the error when the result has is_error', async () => {
+      const modelUsage = {
+        'claude-haiku-5-5': {
+          inputTokens: 200,
+          outputTokens: 345,
+          cacheReadInputTokens: 900,
+          cacheCreationInputTokens: 100,
+          webSearchRequests: 0,
+          costUSD: 0.1234,
+          contextWindow: 200000,
+          maxOutputTokens: 16384,
+        },
+      };
+      const mockResponse = {
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'assistant',
+            message: {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'text', text: 'Working on it' }],
+            },
+          };
+          yield {
+            type: 'result',
+            subtype: 'error_during_execution',
+            is_error: true,
+            session_id: 'died-session',
+            total_cost_usd: 0.1234,
+            duration_ms: 4321,
+            usage: {
+              input_tokens: 200,
+              output_tokens: 345,
+              cache_read_input_tokens: 900,
+              cache_creation_input_tokens: 100,
+            },
+            modelUsage,
+            stop_reason: null,
+          };
+        },
+      };
+      vi.mocked(mockQuery).mockReturnValue(mockResponse as any);
+
+      const result = await model.doStream({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'Test' }] }],
+      });
+
+      const chunks: ExtendedStreamPart[] = [];
+      const reader = result.stream.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+
+      const types = chunks.map((c) => c.type);
+      // The open text part is closed before the error, and finish is the last part.
+      expect(types.slice(-3)).toEqual(['text-end', 'error', 'finish']);
+      expect(types.filter((t) => t === 'error')).toHaveLength(1);
+      expect(types.filter((t) => t === 'finish')).toHaveLength(1);
+
+      const errorPart = chunks.find((c) => c.type === 'error') as any;
+      expect(errorPart.error.message).toContain('Claude Code CLI returned an error');
+
+      const finishPart = chunks[chunks.length - 1] as any;
+      expect(finishPart.finishReason).toEqual({ unified: 'error', raw: 'error_during_execution' });
+      expect(finishPart.usage).toMatchObject({
+        inputTokens: { total: 1200, noCache: 200, cacheRead: 900, cacheWrite: 100 },
+        outputTokens: { total: 345 },
+      });
+      expect(finishPart.providerMetadata['claude-code']).toEqual({
+        sessionId: 'died-session',
+        costUsd: 0.1234,
+        durationMs: 4321,
+        modelUsage,
+      });
+    });
+
+    it('should keep a non-null stop_reason as the raw finish reason on an is_error result', async () => {
+      const mockResponse = {
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'result',
+            subtype: 'success',
+            is_error: true,
+            result: 'API Error: 500 Internal server error',
+            session_id: 'api-error-session',
+            total_cost_usd: 0.05,
+            usage: { input_tokens: 10, output_tokens: 5 },
+            stop_reason: 'end_turn',
+          };
+        },
+      };
+      vi.mocked(mockQuery).mockReturnValue(mockResponse as any);
+
+      const result = await model.doStream({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'Test' }] }],
+      });
+      const chunks: ExtendedStreamPart[] = [];
+      const reader = result.stream.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+
+      expect(chunks.map((c) => c.type)).toEqual(['stream-start', 'error', 'finish']);
+      expect((chunks[1] as any).error.message).toContain('API Error: 500');
+      expect((chunks[2] as any).finishReason).toEqual({ unified: 'error', raw: 'end_turn' });
+      expect((chunks[2] as any).usage).toMatchObject({
+        inputTokens: { total: 10 },
+        outputTokens: { total: 5 },
+      });
+      expect((chunks[2] as any).providerMetadata['claude-code'].costUsd).toBe(0.05);
     });
 
     it('should use stop_reason from result message for stream finish reason', async () => {
